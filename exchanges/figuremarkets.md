@@ -54,26 +54,45 @@ Response:
 
 The token is **opaque** — don't try to parse as a JWT. It's valid for ~24 hours. Refresh proactively (60 seconds before expiry) and on any 401. Send as `Authorization: Bearer <token>` on every Trader API request.
 
-## Symbol naming — `-2S` suffix on BTC, not others
+## Two exchanges: US and Global (Cayman)
 
-Figure Markets uses venue-specific symbol naming. BTC pairs carry a `-2S` suffix; other assets do not:
+Figure Markets operates two distinct trading venues:
 
-- BTC: `BTC-USD-2S`, `BTC-USDC-2S`
-- ETH, SOL, LINK, UNI, XRP, USDC: no suffix (`ETH-USD`, `ETH-USDC`, `SOL-USD`, ...)
+- **US exchange** — US-registered. `location=US`.
+- **Global exchange (Cayman)** — Cayman-based. `location=CAYMAN`.
 
-**Always use the exact symbol the venue returns from the markets endpoint** — don't assume the "obvious" name works. When debugging "no data" or "unknown symbol" errors, the first check is whether the symbol string exactly matches what `list_symbols` or `/api/v1/markets` reports. Use `symbol`, not `displayName`.
+**Instruments are location-specific.** A symbol that's tradable on the US venue is not necessarily tradable on the Global venue, and vice versa. The instrument list returned by the discovery endpoints depends on the `location` you pass — calling `list_symbols` without specifying one gives you whatever the venue defaults to for your credentials, which is usually not the full picture.
 
-## Symbol discovery — multiple endpoints
+**Symbol prefix convention:**
+- `KY-...` prefix → **Global (Cayman)** instrument (e.g. `KY-BTC-USD`, `KY-ETH-USD`).
+- No `KY-` prefix → **US** instrument (e.g. `BTC-USD-2S`, `ETH-USD`).
 
-| Endpoint                                                                  | Auth | Use when                                            |
-| ------------------------------------------------------------------------- | ---- | --------------------------------------------------- |
-| `POST /api/v1/list_symbols`                                               | Yes  | Just need symbol strings                            |
-| `POST /api/v1/list_instruments` (`pageSize` / `pageToken`)                | Yes  | Need precision/tick/limits for many markets         |
-| `POST /api/v1/get_instrument_metadata` (`{symbol}`)                       | Yes  | Need metadata for one market                        |
-| `GET /v1/markets?location=US`                                             | No   | Public list with location filter                    |
-| `GET /service-hft-exchange/api/v1/markets?location=US&candle_type=TRADE`  | No   | Same with candle filter; used in production         |
+**Decide upfront which venue you're trading on.** Your credentials, instrument list, and order-routing all key off the location. Trying to place an order in a symbol from a venue your account isn't onboarded to returns `"Order for other location"`. Submitting a `list_*` call without a location returns a partial view and will silently miss instruments you actually have access to.
 
-The `location` filter matters: only markets matching your market location are valid for order entry by default (per the Orders doc). Filter client-side as well; the server enforces it on submit.
+For every symbol-discovery call below, **always pass the location explicitly.** Treat it as a required parameter even when the API technically allows omitting it.
+
+## Symbol naming — `-2S` suffix on BTC, `KY-` prefix on Global
+
+Figure Markets uses venue-specific symbol naming. Two independent conventions to be aware of:
+
+- **`KY-` prefix** → Global (Cayman) instrument (see Two-exchanges section above). US instruments do not carry this prefix.
+- **`-2S` suffix on BTC pairs** (US side observed): `BTC-USD-2S`, `BTC-USDC-2S`. Other assets do not carry the suffix (`ETH-USD`, `ETH-USDC`, `SOL-USD`, ...). The Global-side BTC equivalent uses the `KY-` prefix instead (e.g. `KY-BTC-USD`).
+
+**Always use the exact symbol the venue returns from the markets endpoint** — don't assume the "obvious" name works. When debugging "no data" or "unknown symbol" errors, the first check is whether the symbol string exactly matches what `list_symbols` (with the right location) or `/api/v1/markets?location=...` reports. Use `symbol`, not `displayName`.
+
+## Symbol discovery — multiple endpoints (always pass `location`)
+
+| Endpoint                                                                            | Auth | Use when                                            |
+| ----------------------------------------------------------------------------------- | ---- | --------------------------------------------------- |
+| `POST /api/v1/list_symbols` (body includes `location`)                              | Yes  | Just need symbol strings                            |
+| `POST /api/v1/list_instruments` (body includes `location`, `pageSize`, `pageToken`) | Yes  | Need precision/tick/limits for many markets         |
+| `POST /api/v1/get_instrument_metadata` (body: `{symbol}`)                           | Yes  | Need metadata for one market                        |
+| `GET /v1/markets?location=US` (or `CAYMAN`)                                         | No   | Public list filtered by location                    |
+| `GET /service-hft-exchange/api/v1/markets?location=US&candle_type=TRADE`            | No   | Same with candle filter; used in production         |
+
+The `location` filter is not optional in practice. Without it, the response is whichever venue the API defaults to for your credentials — which silently omits instruments you might actually be able to trade on the other venue. Per the Orders doc, only markets matching your market location are valid for order entry by default; filter client-side as well so a missed location parameter doesn't slip an order to the wrong venue.
+
+Two-venue accounts (some operators have both US and Cayman onboarding) need to call the discovery endpoints **once per location** and treat the unions or per-venue lists explicitly in their adapter layer.
 
 ## Wire format — scaled integer strings, not display values
 
@@ -194,7 +213,7 @@ Practical consequence: if you're building a public market-data fan-out service o
 - **Don't use `wss://figuremarkets.com/service-hft-exchange-websocket/`.** It exists but is not in the documented Trader API and the channel coverage is incomplete. Use the NDJSON stream.
 - **Don't authenticate against `trade.figuremarkets.*`.** Always `www.*`.
 - **Don't send display-value prices/qtys.** Always wire-scaled integer strings.
-- **Don't assume symbol names.** Always look up via `list_symbols`.
+- **Don't assume symbol names.** Always look up via `list_symbols` (or one of the other discovery endpoints), and **always pass the `location` parameter** so the result actually covers the venue you're trading on. `KY-`-prefixed symbols belong to the Global (Cayman) exchange; non-prefixed symbols belong to US.
 - **Don't use bare account IDs.** Always the full `firms/.../accounts/...` resource path.
 - **Don't hardcode response key casing.** Read both `order_id` and `orderId` defensively; send `order_id`.
 
@@ -207,9 +226,10 @@ Practical consequence: if you're building a public market-data fan-out service o
 | 400 on `insert_order`                  | Display values instead of wire-scaled integer strings         |
 | 400 on `insert_order` (qty/price)      | Number instead of string                                      |
 | 400 on `insert_order` (account)        | Bare ID instead of `firms/.../accounts/...` resource path     |
-| 400 with "unknown symbol"              | Symbol typo, or missing venue suffix like `-2S`               |
+| 400 with "unknown symbol"              | Symbol typo, missing `-2S` suffix on BTC, or missing `KY-` prefix when targeting Global |
 | Empty subscription stream              | Wrong endpoint, or symbol not in your location                |
-| "Order for other location"             | Symbol exists but isn't tradable from your market location    |
+| "Order for other location"             | US symbol submitted to a Global-onboarded account (or vice versa); pass the correct `location` |
+| `list_symbols` returns fewer markets than expected | `location` not passed, or passed as a value your credentials aren't onboarded to |
 | 400 with `getAllMarkets.page` message  | Public markets endpoint pages are 1-indexed                   |
 | `"Unexpected response: {'order_id'...}"` from your own wrapper | Wrapper reads only `orderId`; live API returns `order_id` |
 

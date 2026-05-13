@@ -92,9 +92,11 @@ Each venue picks a different format and a different normalization.
 | Nado / Vertex  | `BTC-PERP`, `ETH-PERP`                                       | Looked up by **product_id** internally; **odd = spot, even = perp** in the fork variant — easy to trade the wrong product |
 | Hyperliquid    | `BTC`, `ETH`; HIP-3 venues use `xyz:TSLA`, `xyz:GOLD`         | Bare coin name; HIP-3 prefixed with venue dex             |
 | o2 / Fuel      | `ETH/USDC`, `wBTC/USDC` (mainnet); `fETH/fUSDC` (testnet)     | Slash-separated; testnet prefixes with `f`                |
-| Figure Markets | `BTC-USD-2S`, `BTC-USDC-2S`; `ETH-USD`, `HASH-USD`            | BTC pairs carry a `-2S` venue suffix; other assets don't  |
+| Figure Markets | US: `BTC-USD-2S`, `ETH-USD`, ... Global (Cayman): `KY-BTC-USD`, `KY-ETH-USD`, ... | Two-venue setup: US + Global. BTC on the US side carries a `-2S` suffix; Global instruments are prefixed `KY-`. Discovery calls take a `location` parameter (`US` or `CAYMAN`) — without it you get a partial list. |
 
 Recurring lesson: always list the available symbols at startup via the venue's own discovery endpoint, never hardcode. The same asset has different names on different venues and sometimes a different name on the same venue's testnet.
+
+Some venues operate **multiple distinct exchanges under one API surface** (e.g. Figure Markets US + Global). Instruments are not portable across them — a symbol on one is not necessarily tradable on the other. Discovery and order-entry endpoints take a `location`-style parameter; treat it as required even when the API technically allows omitting it, so a missing parameter doesn't return a silent partial response.
 
 ## 7. Fill detection — three patterns, two are reliable
 
