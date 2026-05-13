@@ -111,18 +111,7 @@ For market-making and spread strategies: fill detection latency must be **lower 
 
 Patterns that come up repeatedly when wiring two or more venues together:
 
-### 8.1 Spread-quoting math — same-side counterpart, not mid
-
-The naive "quote around joint mid" formula (`bid_A = leg_b.mid × (1 − offset)`) silently conflates the operator's intended edge with the cross-venue basis. The correct formulation:
-
-- Bidding leg A (we buy A → hedge sells leg B at the bid):
-  `bid_A = leg_b.bid × (1 − offset)`
-- Asking leg A (we sell A → hedge buys leg B at the ask):
-  `ask_A = leg_b.ask × (1 + offset)`
-
-This makes the operator's `offset_bps` always equal to the realized edge per round-trip fill. The mid-based version drifts with basis (sometimes favorable, sometimes adverse) and is hard to reason about as a target return.
-
-### 8.2 Hedge failure is the real risk
+### 8.1 Hedge failure is the real risk
 
 Cross-venue spreading goes wrong in one specific way: the passive leg fills, the hedge leg fails (balance, health, connectivity, rate limit). You now hold a directional position you weren't trying to hold. Build for this case explicitly:
 
@@ -131,15 +120,15 @@ Cross-venue spreading goes wrong in one specific way: the passive leg fills, the
 3. **Retry once, with more aggressive pricing.** If the hedge fails because the price moved, +N pay-up ticks usually clears it. If it still fails, stop — don't keep retrying; that's how stale state turns into a runaway loss.
 4. **Surface the unhedged state prominently.** Log + alert + UI badge. A market-neutral strategy with an unhedged leg is no longer market-neutral.
 
-### 8.3 Cross-venue label widths
+### 8.2 Cross-venue label widths
 
 Any column or identifier that combines venue + market for a cross-venue position needs to be sized for the longest plausible combination, not the longest single source. Example: `BTC-USD-2S/BTC-USDC-2S` is 22 characters; if your column is `VARCHAR(20)` (sized for `XYZ100-PERP`) the first cross-venue bot fails with an opaque truncation error.
 
-### 8.4 Fill-detection asymmetry shapes which leg should be active
+### 8.3 Fill-detection asymmetry shapes which leg should be active
 
 If leg A's fill is detected in ~100 ms and leg B's in ~250 ms, the venue you'd prefer as the **active** (quoting) leg is the one whose fills you detect first. Otherwise your hedge starts late by the slow venue's polling interval.
 
-### 8.5 Quote-size minimum is the larger of the two legs
+### 8.4 Quote-size minimum is the larger of the two legs
 
 If leg A has a $10-notional minimum (e.g. `~0.00013 BTC` at $80k) and leg B has a $1-notional minimum, **the spread's minimum is the larger of the two** — anything smaller will be rejected at leg A and you'll have a one-sided spread. Don't hardcode a UI minimum; derive it from the per-leg metadata.
 
